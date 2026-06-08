@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["python312", "ffmpeg"]
-
-[phases.install]
-cmds = ["pip3 install -r requirements.txt --break-system-packages"]
-
-[start]
-cmd = "python3 bot.py"
