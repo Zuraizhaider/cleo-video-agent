@@ -1,6 +1,8 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "pip install -r requirements.txt && apt-get install -y ffmpeg"
+
+[build.nixpacksPlan.phases.setup]
+nixPkgs = ["python312", "ffmpeg"]
 
 [deploy]
 startCommand = "python bot.py"
