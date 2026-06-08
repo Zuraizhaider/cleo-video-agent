@@ -49,6 +49,12 @@ async def _generate_single_clip(
     Submit a video generation task and poll until complete.
     Returns local file path of downloaded video.
     """
+    if not MINIMAX_API_KEY:
+        raise Exception(
+            "Video generation needs your Minimax API key.\n"
+            "Add it in Railway Variables: MINIMAX_API_KEY\n"
+            "Sign up at platform.minimaxi.com"
+        )
     headers = {
         "Authorization": f"Bearer {MINIMAX_API_KEY}",
         "Content-Type": "application/json",
@@ -125,6 +131,12 @@ async def _poll_task(
 
 async def get_video_url_from_file_id(file_id: str) -> str:
     """Convert Minimax file_id to downloadable URL."""
+    if not MINIMAX_API_KEY:
+        raise Exception(
+            "Video generation needs your Minimax API key.\n"
+            "Add it in Railway Variables: MINIMAX_API_KEY\n"
+            "Sign up at platform.minimaxi.com"
+        )
     headers = {
         "Authorization": f"Bearer {MINIMAX_API_KEY}",
         "Content-Type": "application/json",

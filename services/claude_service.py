@@ -11,11 +11,22 @@ import json
 import re
 from config import ANTHROPIC_API_KEY
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+_client = None
+
+def _get_client():
+    global _client
+    if not ANTHROPIC_API_KEY:
+        raise Exception(
+            "Script writing needs your Anthropic API key.\n"
+            "Add it in Railway Variables: ANTHROPIC_API_KEY"
+        )
+    if _client is None:
+        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _client
 
 
 def _ask(system: str, user: str, max_tokens: int = 2000) -> str:
-    response = client.messages.create(
+    response = _get_client().messages.create(
         model="claude-opus-4-5",
         max_tokens=max_tokens,
         system=system,
