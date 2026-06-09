@@ -1,7 +1,6 @@
 """
-Cleo — YouTube Shorts Video Agent
-Telegram bot that creates AI videos from natural language requests.
-Deploy on Railway.
+Cleo v3 — YouTube Shorts Video Agent
+Clean, natural, no command list shown.
 """
 import logging
 from telegram import Update
@@ -12,11 +11,12 @@ from telegram.ext import (
 from handlers.video_handler import (
     handle_video_request,
     handle_clarification_reply,
+    handle_script_commands,
     handle_script_approval,
     handle_clip_selection,
 )
 from handlers.voice_handler import handle_voice_sample
-from config import BOT_TOKEN, BOT_NAME
+from config import BOT_TOKEN, BOT_NAME, ELEVENLABS_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -24,174 +24,138 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-HELP_TEXT = f"""
-🎬 *{BOT_NAME} — YouTube Shorts Video Agent*
-
-Just talk to me naturally:
-
-*"Hey {BOT_NAME} find a perfect story lets create a video"*
-→ I find a trending topic and write the script
-
-*"Hey {BOT_NAME} make a video on morning routines for fitness"*
-→ I write a targeted script for your topic and niche
-
-*"Hey {BOT_NAME} make a video of a girl jogging at sunrise"*
-→ I ask if you want a full short or single clip
-
-*During script review:*
-• *`yes`* — approve and start generating videos
-• *`rewrite`* — completely new script
-• *`rewrite [instruction]`* — rewrite with your angle
-
-*During scene selection:*
-• *`A`*, *`B`*, or *`C`* — choose your favourite clip
-
-*Setup your voice clone:*
-Send me a voice message (20–30 seconds of you talking)
-→ I clone your voice for all future videos
-
-*Commands:*
-/start — Welcome message
-/help — Show this menu
-/voice — Instructions for voice setup
-"""
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "there"
     await update.message.reply_text(
-        f"👋 Hey {name}! I am *{BOT_NAME}*, your YouTube Shorts video agent.\n\n"
-        f"Tell me a topic and I will create a full cinematic short for you — "
-        f"script, video, voice, everything.\n\n"
-        + HELP_TEXT,
+        f"👋 Hey {name}! I am *{BOT_NAME}*.\n\n"
+        "Tell me what video you want and I will create it.",
         parse_mode="Markdown"
     )
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
-
-
-async def voice_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎙️ *Voice Clone Setup*\n\n"
-        "Send me a voice message of you talking naturally for 20–30 seconds.\n\n"
-        "Tips for best results:\n"
-        "• Speak clearly and naturally\n"
-        "• Use your normal talking voice\n"
-        "• No background noise\n"
-        "• Say anything — read a paragraph, talk about your day\n\n"
-        "Once saved, your cloned voice will be used in every video automatically!",
+        f"🎬 *{BOT_NAME} — How to use*\n\n"
+        "Just talk to me naturally:\n\n"
+        "_\"make a video on morning routines for fitness\"_\n"
+        "_\"find a perfect story and create a video\"_\n"
+        "_\"make a funny parrot video\"_\n"
+        "_\"make a creepy story video\"_\n"
+        "_\"make a video of a girl dancing on a balcony\"_\n\n"
+        "*During script review:*\n"
+        "• `yes` — generate videos\n"
+        "• `rewrite` — new script\n"
+        "• `rewrite scene 2 prompt` — fix one scene\n"
+        "• `edit scene 3 prompt: [your text]` — your own prompt\n"
+        "• `show prompts` / `hide prompts` — toggle prompts\n"
+        "• `slow` / `fast` / `deep` / `calm` / `creepy` — voice style\n\n"
+        "*During scene selection:*\n"
+        "• `A`, `B` or `C` — pick your clip\n\n"
+        "*Series:*\n"
+        "• `part 2`, `part 3` — continue story\n\n"
+        "*Voice clone:*\n"
+        "Send a voice message — I clone it for all videos\n\n"
+        "/status — check API keys",
+        parse_mode="Markdown"
+    )
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    anthropic  = "✅ Ready" if ANTHROPIC_API_KEY else "❌ Add ANTHROPIC_API_KEY in Railway"
+    minimax    = "✅ Ready" if MINIMAX_API_KEY   else "❌ Add MINIMAX_API_KEY in Railway"
+    elevenlabs = "✅ Ready" if ELEVENLABS_API_KEY else "⚠️ Add ELEVENLABS_API_KEY (using gTTS now)"
+    voice      = "✅ Saved" if context.user_data.get("voice_sample_path") else "⚠️ Send a voice message to set up"
+
+    await update.message.reply_text(
+        f"📊 *{BOT_NAME} Status*\n\n"
+        f"🧠 Anthropic: {anthropic}\n"
+        f"🎬 Minimax: {minimax}\n"
+        f"🎙️ ElevenLabs: {elevenlabs}\n"
+        f"🎤 Voice sample: {voice}",
         parse_mode="Markdown"
     )
 
 
 async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Route all text messages based on current state."""
     text  = update.message.text.strip()
     lower = text.lower()
     state = context.user_data.get("video_state", "idle")
 
-    # ── Awaiting clarification (full short vs single clip) ────────────────
+    # Awaiting clarification
     if state == "awaiting_clarification":
         await handle_clarification_reply(update, context)
         return
 
-    # ── Awaiting topic confirmation (bot found trending topic) ────────────
+    # Awaiting topic confirmation
     if state == "awaiting_topic_confirm":
-        if any(w in lower for w in ["yes", "go", "ok", "sure", "do it", "perfect"]):
+        if any(w in lower for w in ["yes", "go", "ok", "sure", "perfect", "great", "do it"]):
             topic = context.user_data.get("video_topic", "")
             niche = context.user_data.get("video_niche", "")
-            msg   = await update.message.reply_text("✍️ Writing your director script…")
+            msg   = await update.message.reply_text("✍️ Writing director script…")
             from handlers.video_handler import _write_and_show_script
             await _write_and_show_script(update, context, topic, niche, msg)
         else:
-            # User gave a different topic
             context.user_data["video_topic"] = text
             context.user_data["video_state"] = "idle"
-            msg = await update.message.reply_text("✍️ Writing your director script…")
+            msg = await update.message.reply_text("✍️ Writing director script…")
             from handlers.video_handler import _write_and_show_script
             await _write_and_show_script(update, context, text, "", msg)
         return
 
-    # ── Script approval ───────────────────────────────────────────────────
+    # Script approval — all commands handled here
     if state == "awaiting_script_approval":
-        if lower in ["yes", "go", "ok", "looks good", "perfect", "send it", "generate"]:
-            await handle_script_approval(update, context)
-        elif lower.startswith("rewrite"):
-            instruction = lower.replace("rewrite", "").strip()
-            msg = await update.message.reply_text("✍️ Rewriting script…")
-            try:
-                from services.claude_service import rewrite_script, format_script_message
-                original = context.user_data.get("current_script", {})
-                new_script = rewrite_script(original, instruction)
-                context.user_data["current_script"] = new_script
-                await msg.delete()
-                await update.message.reply_text(
-                    format_script_message(new_script),
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                await msg.edit_text(f"❌ Rewrite failed: {str(e)[:100]}")
-        else:
-            await update.message.reply_text(
-                "Reply *`yes`* to generate videos or *`rewrite`* for a new script.",
-                parse_mode="Markdown"
-            )
+        await handle_script_commands(update, context)
         return
 
-    # ── Scene clip selection A/B/C ────────────────────────────────────────
+    # Scene clip selection
     if state == "selecting_clips":
-        if upper := text.upper() in ["A", "B", "C", "D"]:
-            await handle_clip_selection(update, context)
-        elif text.upper() in ["A", "B", "C", "D"]:
+        if text.upper() in ["A", "B", "C", "D"]:
             await handle_clip_selection(update, context)
         else:
-            scene_idx = context.user_data.get("current_scene_idx", 0) + 1
+            scene_num = context.user_data.get("current_scene_idx", 0) + 1
             await update.message.reply_text(
-                f"Please reply *A*, *B*, or *C* to choose Scene {scene_idx}",
+                f"Reply *A*, *B* or *C* for Scene {scene_num}",
                 parse_mode="Markdown"
             )
         return
 
-    # ── New video request — any state ─────────────────────────────────────
-    bot_name_lower = BOT_NAME.lower()
-    is_video_request = any(w in lower for w in [
-        bot_name_lower, "make a video", "create a video", "find a story",
-        "lets create", "make video", "video on", "short on", "create short"
+    # Series continuation from idle
+    if lower.startswith("part ") and len(lower.split()) > 1 and lower.split()[1].isdigit():
+        await handle_video_request(update, context)
+        return
+
+    # New video request — detect naturally
+    bot_lower  = BOT_NAME.lower()
+    is_request = any(w in lower for w in [
+        bot_lower, "make a video", "create a video", "find a story",
+        "lets create", "make video", "video on", "short on",
+        "create short", "find a perfect", "make a short",
+        "create a short", "make me a video", "funny video",
+        "create video", "make an", "create an",
     ])
 
-    if is_video_request:
+    if is_request:
         await handle_video_request(update, context)
     else:
         await update.message.reply_text(
-            f"🎬 Tell me what video to create!\n\n"
-            f"Try: *\"Hey {BOT_NAME} make a video on morning routines\"*\n"
-            f"Or: *\"Hey {BOT_NAME} find a trending story\"*\n\n"
-            f"Type /help for all options.",
-            parse_mode="Markdown"
+            f"Tell me what video to create!\n\n"
+            f"Type /help to see examples.",
         )
 
 
 async def route_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle voice messages — save as voice clone sample."""
     await handle_voice_sample(update, context)
 
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("voice", voice_cmd))
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, route_message
-    ))
-    app.add_handler(MessageHandler(
-        filters.VOICE | filters.AUDIO, route_voice
-    ))
-
-    logger.info(f"{BOT_NAME} starting...")
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, route_voice))
+    logger.info(f"{BOT_NAME} v3 starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

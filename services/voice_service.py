@@ -1,134 +1,103 @@
 """
 services/voice_service.py
-Clones user voice using OpenVoice V2 (free, runs on Railway).
-Generates voiceover audio for each scene.
+ElevenLabs voice cloning — real cloned voice at speed 1.4
+Falls back to gTTS if no ElevenLabs key.
 """
 import os
+import aiohttp
 import asyncio
-import aiofiles
-from pathlib import Path
+from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, VOICE_SPEED
 
-VOICE_SAMPLE_PATH = os.getenv("VOICE_SAMPLE_PATH", "/app/voice_sample.mp3")
-OUTPUT_DIR        = "/tmp/voice_outputs"
+OUTPUT_DIR = "/tmp/voice_outputs"
 
 
-def _ensure_output_dir():
+def _ensure_dir():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 async def generate_voiceover(
     text: str,
     scene_number: int,
-    voice_sample_path: str = VOICE_SAMPLE_PATH,
+    style: str = "",
 ) -> str:
     """
-    Generate cloned voice audio for a scene.
-    Returns path to generated MP3 file.
+    Generate voiceover for a scene.
+    Uses ElevenLabs if key available, else gTTS fallback.
+    Returns path to MP3 file.
     """
-    _ensure_output_dir()
+    _ensure_dir()
     output_path = f"{OUTPUT_DIR}/scene{scene_number}_voice.mp3"
 
-    # Run OpenVoice in a thread (CPU-bound)
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        _generate_with_openvoice,
-        text,
-        voice_sample_path,
-        output_path,
-    )
-    return result
+    if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+        return await _elevenlabs_tts(text, output_path, style)
+    else:
+        return await _gtts_fallback(text, output_path)
 
 
-def _generate_with_openvoice(
-    text: str,
-    voice_sample_path: str,
-    output_path: str,
-) -> str:
-    """
-    Run OpenVoice V2 voice cloning synchronously.
-    Falls back to basic TTS if OpenVoice not installed.
-    """
+async def _elevenlabs_tts(text: str, output_path: str, style: str = "") -> str:
+    """Generate voice using ElevenLabs API with cloned voice."""
+
+    # Map style to ElevenLabs settings
+    style_settings = {
+        "excited":    {"stability": 0.3, "similarity_boost": 0.8, "style": 0.8},
+        "calm":       {"stability": 0.8, "similarity_boost": 0.7, "style": 0.2},
+        "aggressive": {"stability": 0.2, "similarity_boost": 0.9, "style": 0.9},
+        "whisper":    {"stability": 0.9, "similarity_boost": 0.6, "style": 0.1},
+        "deep":       {"stability": 0.6, "similarity_boost": 0.8, "style": 0.4},
+        "":           {"stability": 0.5, "similarity_boost": 0.8, "style": 0.5},
+    }
+
+    settings = style_settings.get(style.lower(), style_settings[""])
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability":        settings["stability"],
+            "similarity_boost": settings["similarity_boost"],
+            "style":            settings["style"],
+            "use_speaker_boost": True,
+            "speed":            VOICE_SPEED,
+        }
+    }
+
     try:
-        # Try OpenVoice V2
-        from openvoice import se_extractor
-        from openvoice.api import ToneColorConverter
-        import torch
-        from melo.api import TTS
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status == 200:
+                    audio = await resp.read()
+                    with open(output_path, "wb") as f:
+                        f.write(audio)
+                    return output_path
+                else:
+                    error = await resp.text()
+                    print(f"[voice] ElevenLabs error {resp.status}: {error}")
+                    return await _gtts_fallback(text, output_path)
+    except Exception as e:
+        print(f"[voice] ElevenLabs exception: {e}")
+        return await _gtts_fallback(text, output_path)
 
-        device = "cpu"  # Railway uses CPU
 
-        # Generate base TTS
-        tts_model = TTS(language="EN", device=device)
-        speaker_ids = tts_model.hps.data.spk2id
-        speaker_key = list(speaker_ids.keys())[0]
-        speaker_id  = speaker_ids[speaker_key]
-
-        base_audio = output_path.replace(".mp3", "_base.wav")
-        tts_model.tts_to_file(
-            text,
-            speaker_id,
-            base_audio,
-            speed=1.0,
-        )
-
-        # Apply voice cloning
-        if os.path.exists(voice_sample_path):
-            ckpt_converter = "checkpoints_v2/converter"
-            converter = ToneColorConverter(
-                f"{ckpt_converter}/config.json", device=device
-            )
-            converter.load_ckpt(f"{ckpt_converter}/checkpoint.pth")
-
-            target_se, _ = se_extractor.get_se(
-                voice_sample_path,
-                converter,
-                vad=False,
-            )
-            source_se = torch.load(
-                f"checkpoints_v2/base_speakers/ses/{speaker_key.lower()}.pth",
-                map_location=device,
-            )
-
-            converter.convert(
-                audio_src_path=base_audio,
-                src_se=source_se,
-                tgt_se=target_se,
-                output_path=output_path,
-                message="@MyShell",
-            )
-        else:
-            # No voice sample — use base TTS
-            import shutil
-            shutil.copy(base_audio, output_path)
-
+async def _gtts_fallback(text: str, output_path: str) -> str:
+    """Google TTS fallback — free, decent quality."""
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _gtts_sync, text, output_path)
         return output_path
-
-    except ImportError:
-        # OpenVoice not installed — use pyttsx3 fallback
-        return _fallback_tts(text, output_path)
     except Exception as e:
-        print(f"[voice_service] OpenVoice error: {e}")
-        return _fallback_tts(text, output_path)
-
-
-def _fallback_tts(text: str, output_path: str) -> str:
-    """Basic TTS fallback using gTTS (Google Text to Speech — free)."""
-    try:
-        from gtts import gTTS
-        tts = gTTS(text=text, lang="en", slow=False)
-        mp3_path = output_path if output_path.endswith(".mp3") else output_path + ".mp3"
-        tts.save(mp3_path)
-        return mp3_path
-    except Exception as e:
-        print(f"[voice_service] gTTS fallback error: {e}")
+        print(f"[voice] gTTS error: {e}")
         return ""
 
 
-async def save_voice_sample(audio_bytes: bytes, filename: str = "voice_sample.mp3") -> str:
-    """Save user's voice recording for cloning."""
-    sample_path = f"/app/{filename}"
-    os.makedirs("/app", exist_ok=True)
-    async with aiofiles.open(sample_path, "wb") as f:
-        await f.write(audio_bytes)
-    return sample_path
+def _gtts_sync(text: str, output_path: str):
+    from gtts import gTTS
+    tts = gTTS(text=text, lang="en", slow=False)
+    tts.save(output_path)

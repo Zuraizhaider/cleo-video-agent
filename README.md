@@ -1,4 +1,4 @@
-# 🎬 Cleo — Video Agent
+# 🎬 Cleo — YouTube Shorts Video Agent
 
 Create full cinematic YouTube Shorts from your phone via Telegram.
 Just tell Cleo what you want — it writes the script, generates videos,
