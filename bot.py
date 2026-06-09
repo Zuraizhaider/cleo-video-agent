@@ -139,8 +139,7 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_video_request(update, context)
     else:
         await update.message.reply_text(
-            f"Tell me what video to create!\n\n"
-            f"Type /help to see examples.",
+            "Tell me what video you want and I will create it. 🎬"
         )
 
 
