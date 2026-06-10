@@ -341,3 +341,70 @@ def format_script_message(script: dict, show_prompts: bool = True) -> str:
         "• *`show prompts`* — show prompts again"
     )
     return "\n".join(lines)
+
+
+def generate_story_options(topic: str, niche: str = "", style: str = "", count: int = 3) -> list[dict]:
+    """
+    Generate 2-3 different story concepts for the same topic.
+    Returns list of {title, logline, style, hook}
+    """
+    system = (
+        "You are a YouTube Shorts creative director. "
+        "Generate multiple different story angles for the same topic. "
+        "Each must feel completely different. "
+        "Return ONLY valid JSON array."
+    )
+    niche_line = f"Niche: {niche}." if niche else ""
+    style_line = f"Style preference: {style}." if style else ""
+
+    user = (
+        f"Generate {count} completely different story concepts for: '{topic}'\n"
+        f"{niche_line} {style_line}\n\n"
+        "Each concept must have a different angle, emotion, and approach.\n"
+        "For example for 'cat video': emotional rescue story, funny cat fails, "
+        "day in the life of a cat.\n\n"
+        f"Return JSON array of {count} objects:\n"
+        "[\n"
+        "  {\n"
+        '    "option": 1,\n'
+        '    "title": "short catchy title",\n'
+        '    "logline": "one sentence story summary",\n'
+        '    "style": "ugc/cinematic/animals/horror/animated/fantasy",\n'
+        '    "hook": "the opening line or moment that grabs attention",\n'
+        '    "emotion": "the main emotion this evokes"\n'
+        "  }\n"
+        "]"
+    )
+    raw = _ask(system, user, max_tokens=1500)
+    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    try:
+        return json.loads(raw)
+    except Exception:
+        return [{"option": 1, "title": topic, "logline": topic,
+                 "style": "ugc", "hook": "", "emotion": "inspiring"}]
+
+
+def format_story_options(options: list[dict], topic: str) -> str:
+    """Format story options as Telegram message."""
+    lines = [f"🎬 *{len(options)} story ideas for \"{topic}\":*\n"]
+    for opt in options:
+        n       = opt.get("option", "?")
+        title   = opt.get("title", "")
+        logline = opt.get("logline", "")
+        style   = opt.get("style", "ugc").upper()
+        hook    = opt.get("hook", "")
+        emotion = opt.get("emotion", "")
+        lines.append(
+            f"*{n}. {title}*\n"
+            f"_{logline}_\n"
+            f"Style: {style} · Emotion: {emotion}\n"
+            f"Hook: \"{hook}\"\n"
+        )
+    lines.append(
+        "─────────────────────────\n"
+        "Reply:\n"
+        "• *`1`*, *`2`* or *`3`* — pick one story\n"
+        "• *`1 2`* or *`1 2 3`* — pick multiple (creates one video per story)\n"
+        "• *`all`* — create all stories as separate videos"
+    )
+    return "\n".join(lines)
