@@ -1,5 +1,5 @@
 """
-Cleo v3 —  Shorts  Agent
+Cleo v3 —  Shorts Agent
 Clean, natural, no command list shown.
 """
 import logging
@@ -15,6 +15,7 @@ from handlers.video_handler import (
     handle_script_approval,
     handle_clip_selection,
     handle_story_selection,
+    handle_voice_style_reply,
 )
 from handlers.voice_handler import handle_voice_sample
 from config import BOT_TOKEN, BOT_NAME, ELEVENLABS_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY
@@ -91,6 +92,11 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Awaiting story selection — user picks 1, 2, 3 or all
     if state == "awaiting_story_selection":
         await handle_story_selection(update, context)
+        return
+
+    # Awaiting voice style
+    if state == "awaiting_voice_style":
+        await handle_voice_style_reply(update, context)
         return
 
     # Awaiting topic confirmation
