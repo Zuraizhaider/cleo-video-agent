@@ -1,5 +1,5 @@
 """
-Cleo v3 — YouTube Shorts Video Agent
+Cleo v3 —  Shorts  Agent
 Clean, natural, no command list shown.
 """
 import logging
@@ -14,6 +14,7 @@ from handlers.video_handler import (
     handle_script_commands,
     handle_script_approval,
     handle_clip_selection,
+    handle_story_selection,
 )
 from handlers.voice_handler import handle_voice_sample
 from config import BOT_TOKEN, BOT_NAME, ELEVENLABS_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY
@@ -87,6 +88,11 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_clarification_reply(update, context)
         return
 
+    # Awaiting story selection — user picks 1, 2, 3 or all
+    if state == "awaiting_story_selection":
+        await handle_story_selection(update, context)
+        return
+
     # Awaiting topic confirmation
     if state == "awaiting_topic_confirm":
         if any(w in lower for w in ["yes", "go", "ok", "sure", "perfect", "great", "do it"]):
@@ -125,22 +131,8 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_video_request(update, context)
         return
 
-    # New video request — detect naturally
-    bot_lower  = BOT_NAME.lower()
-    is_request = any(w in lower for w in [
-        bot_lower, "make a video", "create a video", "find a story",
-        "lets create", "make video", "video on", "short on",
-        "create short", "find a perfect", "make a short",
-        "create a short", "make me a video", "funny video",
-        "create video", "make an", "create an",
-    ])
-
-    if is_request:
-        await handle_video_request(update, context)
-    else:
-        await update.message.reply_text(
-            "Tell me what video you want and I will create it. 🎬"
-        )
+    # Everything goes to video handler — no filtering
+    await handle_video_request(update, context)
 
 
 async def route_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
