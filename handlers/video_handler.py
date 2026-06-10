@@ -10,6 +10,7 @@ from services.claude_service import (
     understand_request, find_trending_topic,
     write_director_script, rewrite_script,
     rewrite_scene_prompt, format_script_message,
+    generate_story_options, format_story_options,
 )
 from services.video_service import generate_clip_options
 from services.elevenlabs_service import generate_voiceover
@@ -29,22 +30,22 @@ async def handle_video_request(update: Update, context: ContextTypes.DEFAULT_TYP
         await msg.edit_text(f"⚠️ {str(e)}")
         return
 
-    context.user_data["video_intent"]   = intent_data
-    context.user_data["video_state"]    = "thinking"
-    context.user_data["show_prompts"]   = True
-    context.user_data["voice_style"]    = intent_data.get("voice_style") or "natural"
+    context.user_data["video_intent"] = intent_data
+    context.user_data["video_state"]  = "thinking"
+    context.user_data["show_prompts"] = True
+    context.user_data["voice_style"]  = intent_data.get("voice_style") or "natural"
 
     intent      = intent_data.get("intent", "specific_topic")
     needs_voice = intent_data.get("needs_voice", True)
     is_series   = intent_data.get("is_series", False)
     series_part = intent_data.get("series_part", 1)
 
-    # Series continuation
+    # Series continuation — skip story options
     if is_series and series_part > 1:
-        prev   = context.user_data.get("series_summary", "")
-        topic  = intent_data.get("topic") or context.user_data.get("video_topic", "")
-        niche  = intent_data.get("niche") or context.user_data.get("video_niche", "")
-        style  = intent_data.get("style") or context.user_data.get("video_style", "")
+        prev  = context.user_data.get("series_summary", "")
+        topic = intent_data.get("topic") or context.user_data.get("video_topic", "")
+        niche = intent_data.get("niche") or context.user_data.get("video_niche", "")
+        style = intent_data.get("style") or context.user_data.get("video_style", "")
         await msg.edit_text(f"✍️ Writing Part {series_part}…")
         await _write_and_show_script(
             update, context, topic, niche, msg,
@@ -53,16 +54,7 @@ async def handle_video_request(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # Needs clarification
-    if intent_data.get("needs_clarification"):
-        context.user_data["video_state"] = "awaiting_clarification"
-        await msg.edit_text(
-            f"🎥 {intent_data.get('clarification_question', 'Full 60s short or single clip?')}",
-            parse_mode="Markdown"
-        )
-        return
-
-    # Find trending topic
+    # Find trending topic first
     if intent == "find_topic":
         await msg.edit_text("🔍 Finding trending topic…")
         try:
@@ -70,30 +62,31 @@ async def handle_video_request(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             await msg.edit_text(f"⚠️ {str(e)}")
             return
-        context.user_data["video_topic"] = topic
-        context.user_data["video_state"] = "awaiting_topic_confirm"
-        await msg.edit_text(
-            f"🔥 *\"{topic}\"*\n\nShall I write the script for this?\n"
-            "Reply *`yes`* or give me a different topic.",
-            parse_mode="Markdown"
-        )
-        return
+    else:
+        topic = intent_data.get("topic") or intent_data.get("description") or text
 
-    # Go straight to script
-    topic = intent_data.get("topic") or intent_data.get("description") or text
     niche = intent_data.get("niche") or ""
     style = intent_data.get("style") or ""
 
-    context.user_data["video_topic"] = topic
-    context.user_data["video_niche"] = niche
-    context.user_data["video_style"] = style
-    context.user_data["needs_voice"] = needs_voice
+    context.user_data["video_topic"]  = topic
+    context.user_data["video_niche"]  = niche
+    context.user_data["video_style"]  = style
+    context.user_data["needs_voice"]  = needs_voice
+    context.user_data["pending_queue"] = []
 
-    await msg.edit_text("✍️ Writing director script…")
-    await _write_and_show_script(
-        update, context, topic, niche, msg,
-        needs_voice=needs_voice, style=style,
-    )
+    # Generate 3 story options
+    await msg.edit_text("💡 Creating story ideas…")
+    try:
+        options = generate_story_options(topic, niche, style, count=3)
+        context.user_data["story_options"] = options
+        context.user_data["video_state"]   = "awaiting_story_selection"
+        await msg.delete()
+        await update.message.reply_text(
+            format_story_options(options, topic),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await msg.edit_text(f"⚠️ {str(e)}")
 
 
 async def handle_clarification_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -453,3 +446,58 @@ async def _finalize_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("current_script", None)
     context.user_data.pop("selected_clips", None)
     context.user_data.pop("scenes", None)
+
+
+async def handle_story_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle user picking 1, 2, 3 or all from story options."""
+    text    = update.message.text.strip().lower()
+    options = context.user_data.get("story_options", [])
+    niche   = context.user_data.get("video_niche", "")
+    needs_voice = context.user_data.get("needs_voice", True)
+
+    # Parse selection
+    selected = []
+    if text == "all":
+        selected = list(range(len(options)))
+    else:
+        for part in text.split():
+            if part.isdigit():
+                idx = int(part) - 1
+                if 0 <= idx < len(options):
+                    selected.append(idx)
+
+    if not selected:
+        await update.message.reply_text(
+            "Reply *`1`*, *`2`*, *`3`*, *`1 2`* or *`all`* to choose.",
+            parse_mode="Markdown"
+        )
+        return
+
+    chosen = [options[i] for i in selected]
+
+    # Queue multiple videos if more than one selected
+    context.user_data["video_queue"]      = chosen[1:] if len(chosen) > 1 else []
+    context.user_data["video_queue_idx"]  = 0
+    context.user_data["video_state"]      = "awaiting_script_approval"
+
+    # Write script for first selected story
+    first = chosen[0]
+    msg   = await update.message.reply_text(
+        f"✍️ Writing script for *{first.get('title', '')}*…",
+        parse_mode="Markdown"
+    )
+
+    if len(chosen) > 1:
+        await update.message.reply_text(
+            f"📋 *{len(chosen)} videos queued.* I will create them one by one after each is approved.",
+            parse_mode="Markdown"
+        )
+
+    await _write_and_show_script(
+        update, context,
+        topic=first.get("title", ""),
+        niche=niche,
+        msg=msg,
+        needs_voice=needs_voice,
+        style=first.get("style", "ugc"),
+    )
