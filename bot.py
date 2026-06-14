@@ -1,5 +1,5 @@
 """
-Cleo v3 —  Shorts Agent
+Cleo v3 — YouTube Shorts Video Agent
 Clean, natural, no command list shown.
 """
 import logging
@@ -18,6 +18,12 @@ from handlers.video_handler import (
     handle_voice_style_reply,
 )
 from handlers.voice_handler import handle_voice_sample
+from handlers.product_handler import (
+    handle_product_photo,
+    handle_demo_ad_request,
+    handle_product_approval,
+    is_product_ad_request,
+)
 from config import BOT_TOKEN, BOT_NAME, ELEVENLABS_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY
 
 logging.basicConfig(
@@ -89,6 +95,11 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_clarification_reply(update, context)
         return
 
+    # Awaiting product ad approval
+    if state == "awaiting_product_approval":
+        await handle_product_approval(update, context)
+        return
+
     # Awaiting story selection — user picks 1, 2, 3 or all
     if state == "awaiting_story_selection":
         await handle_story_selection(update, context)
@@ -117,7 +128,12 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Script approval — all commands handled here
     if state == "awaiting_script_approval":
-        await handle_script_commands(update, context)
+        if lower in ["no", "stop", "cancel", "nope"]:
+            context.user_data["video_state"] = "idle"
+            context.user_data.pop("current_script", None)
+            await update.message.reply_text("Stopped. Tell me a new idea whenever you are ready.")
+        else:
+            await handle_script_commands(update, context)
         return
 
     # Scene clip selection
@@ -145,6 +161,14 @@ async def route_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_voice_sample(update, context)
 
 
+async def route_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get("video_state", "idle")
+    if state == "awaiting_product_approval":
+        await handle_product_approval(update, context)
+    else:
+        await handle_product_photo(update, context)
+
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -152,6 +176,7 @@ def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, route_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, route_photo))
     logger.info(f"{BOT_NAME} v3 starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
