@@ -184,6 +184,21 @@ async def handle_script_commands(update: Update, context: ContextTypes.DEFAULT_T
         await handle_script_approval(update, context)
         return
 
+    if lower in ["no", "stop", "cancel", "nope"]:
+        context.user_data["video_state"] = "idle"
+        context.user_data.pop("current_script", None)
+        await update.message.reply_text(
+            "Stopped. No video generated. Tell me a new idea whenever you are ready."
+        )
+        return
+
+    # NO — stop here, do not generate
+    if lower in ["no", "stop", "cancel", "dont", "nope"]:
+        context.user_data["video_state"] = "idle"
+        context.user_data.pop("current_script", None)
+        await update.message.reply_text("Stopped. No video generated. Tell me a new idea whenever you are ready.")
+        return
+
     # HIDE / SHOW PROMPTS
     if lower == "hide prompts":
         context.user_data["show_prompts"] = False
