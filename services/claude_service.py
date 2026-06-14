@@ -332,13 +332,12 @@ def format_script_message(script: dict, show_prompts: bool = True) -> str:
 
     lines.append("\n─────────────────────────")
     lines.append(
-        "Reply:\n"
-        "• *`yes`* — generate all scenes\n"
-        "• *`rewrite`* — new script\n"
-        "• *`rewrite scene 2 prompt`* — rewrite one scene prompt\n"
-        "• *`edit scene 3 prompt: [your text]`* — use your own prompt\n"
-        "• *`hide prompts`* — hide prompts from view\n"
-        "• *`show prompts`* — show prompts again"
+        "Ready to generate videos?\n\n"
+        "yes - start generating\n"
+        "no - stop here, do not generate\n"
+        "rewrite - new script\n"
+        "rewrite scene 2 prompt - fix one scene\n"
+        "edit scene 3 prompt: [text] - your own prompt"
     )
     return "\n".join(lines)
 
@@ -408,3 +407,163 @@ def format_story_options(options: list[dict], topic: str) -> str:
         "• *`all`* — create all stories as separate videos"
     )
     return "\n".join(lines)
+
+
+def is_product_ad_request(message: str) -> bool:
+    """
+    Quick check if a text-only message is a product ad/demo request
+    vs a YouTube short request.
+    """
+    ad_words = ["ad", "advert", "commercial", "promo", "product demo",
+                "demo for", "demo of", "demo ad", "product video",
+                "hypermotion", "motion ad", "3d ad", "product ad"]
+    story_words = ["story", "video about", "short on", "short about",
+                   "find a story", "find a perfect"]
+
+    lower = message.lower()
+    has_ad_word = any(w in lower for w in ad_words)
+    has_story_word = any(w in lower for w in story_words)
+
+    return has_ad_word and not has_story_word
+
+
+def generate_product_prompt_from_text(description: str) -> dict:
+    """
+    Generate a hypermotion video prompt for an IMAGINED product
+    (no photo provided) — used for portfolio/demo ads.
+    Returns {product_description, prompt}
+    """
+    system = (
+        "You are a world-class product ad director specializing in "
+        "AI-generated hypermotion commercials. You write Minimax Hailuo "
+        "prompts that produce cinematic, realistic product videos. "
+        "Return ONLY valid JSON."
+    )
+    user = (
+        f"Request: '{description}'\n\n"
+        "Imagine an appropriate product for this request and write a "
+        "single Minimax Hailuo video generation prompt.\n\n"
+        "The prompt must include:\n"
+        "- Specific product appearance (since there's no photo, describe "
+        "it clearly so the AI generates a believable product)\n"
+        "- Camera movement (orbit, dolly-in, pull back, pan, etc.)\n"
+        "- Lighting (studio, dramatic, natural, etc.)\n"
+        "- Background/environment\n"
+        "- Mood/style (luxury, minimalist, energetic, etc.)\n"
+        "- Subtle environmental effects (mist, particles, reflections) "
+        "if appropriate\n\n"
+        "Return JSON:\n"
+        "{\n"
+        '  "product_description": "what product this is for",\n'
+        '  "prompt": "the full Minimax prompt"\n'
+        "}"
+    )
+    raw = _ask(system, user, max_tokens=500)
+    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"product_description": description, "prompt": description}
+
+
+def analyze_product_image_and_prompt(image_description: str, user_caption: str = "") -> dict:
+    """
+    Given a description of what's in an uploaded image (from vision analysis)
+    and an optional user caption, generate the best hypermotion prompt.
+    Returns {product_type, prompt}
+    """
+    system = (
+        "You are a world-class product ad director specializing in "
+        "AI-generated hypermotion commercials. You write Minimax Hailuo "
+        "image-to-video prompts that produce cinematic, realistic motion "
+        "for real product photos. Return ONLY valid JSON."
+    )
+    caption_line = (
+        f"User's specific request: '{user_caption}'. Use this as the "
+        "primary direction, refining it with technical detail."
+        if user_caption else
+        "User gave no specific direction — pick the best motion style "
+        "for this product automatically."
+    )
+    user = (
+        f"This image shows: {image_description}\n"
+        f"{caption_line}\n\n"
+        "Write a Minimax Hailuo image-to-video prompt that animates "
+        "this exact product with realistic motion.\n\n"
+        "Include:\n"
+        "- Camera movement (orbit, dolly-in, pull back, pan, etc.)\n"
+        "- How the product itself moves (rotation, floating, etc.) — "
+        "keep it natural, not distorting\n"
+        "- Lighting changes/enhancements\n"
+        "- Background/environment effects\n"
+        "- Mood/style appropriate to this product type\n\n"
+        "Return JSON:\n"
+        "{\n"
+        '  "product_type": "what kind of product this is",\n'
+        '  "prompt": "the full Minimax image-to-video prompt"\n'
+        "}"
+    )
+    raw = _ask(system, user, max_tokens=500)
+    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"product_type": "product", "prompt": user_caption or image_description}
+
+
+def rewrite_product_prompt(current_prompt: str, instruction: str) -> str:
+    """Rewrite a product ad prompt based on user instruction."""
+    system = (
+        "You are a product ad director. Rewrite Minimax video prompts "
+        "based on feedback. Return ONLY the new prompt text, nothing else."
+    )
+    user = (
+        f"Current prompt: {current_prompt}\n\n"
+        f"Instruction: {instruction}\n\n"
+        "Return ONLY the rewritten prompt text."
+    )
+    return _ask(system, user, max_tokens=300).strip()
+
+
+def describe_image(image_path: str) -> str:
+    """
+    Use Claude's vision to describe a product image.
+    Returns a text description for prompt generation.
+    """
+    import base64
+    client = _get_client()
+
+    with open(image_path, "rb") as f:
+        image_bytes = f.read()
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    ext = image_path.lower().split(".")[-1]
+    media_type = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+
+    response = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=300,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": image_b64,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Describe this product photo in detail for a video "
+                        "ad director: what the product is, its colors, "
+                        "materials, shape, background, and current lighting. "
+                        "Be specific and concise (2-3 sentences)."
+                    ),
+                },
+            ],
+        }],
+    )
+    return response.content[0].text.strip()
